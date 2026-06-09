@@ -865,6 +865,26 @@ void *control_worker_thread_rx(void *conn)
 static bool bcast_process_decoded_frame(uint8_t *decoded_frame, int frame_len,
                                          uint8_t kiss_cmd, size_t frame_size)
 {
+    /* Normalise CMD_DATA: the hermes-broadcast convention expects cmd=0x02 frames
+     * to carry a Mercury broadcast-type header at byte 0.  VARA-compatible clients
+     * (e.g. VarAC beacons) sometimes send cmd=0x02 with a raw payload whose byte 0
+     * is NOT a broadcast-type Mercury header.  Detect this by inspecting the packet
+     * type field; if it is not BROADCAST_DATA or BROADCAST_CONTROL, the sender did
+     * not embed a Mercury header.  Promote to CMD_AX25CALLSIGN so the TX path
+     * injects PACKET_TYPE_BROADCAST_DATA | BCAST_EXT_LEN_PREFIX and the frame
+     * arrives at the receiver with the correct packet type (not misrouted to ARQ). */
+    if (kiss_cmd == CMD_DATA)
+    {
+        uint8_t ptype = frame_header_packet_type(decoded_frame[0]);
+        if (ptype != PACKET_TYPE_BROADCAST_DATA && ptype != PACKET_TYPE_BROADCAST_CONTROL)
+        {
+            HLOGD("tcp-bcast",
+                  "CMD_DATA frame missing broadcast Mercury header (type=0x%02X), treating as VARA frame",
+                  ptype);
+            kiss_cmd = CMD_AX25CALLSIGN;
+        }
+    }
+
     /* Latch reply command — same framing style goes back to the client */
     atomic_store_explicit(&bcast_reply_cmd,
         (kiss_cmd == CMD_AX25 || kiss_cmd == CMD_AX25CALLSIGN)

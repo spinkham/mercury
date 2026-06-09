@@ -618,7 +618,9 @@ void test_bcast_rx_cmd_data_short_padded(void)
         atomic_load_explicit(&bcast_reply_cmd, memory_order_relaxed));
 }
 
-/* CMD_DATA, oversized: discarded, write_buffer never called */
+/* CMD_DATA, oversized: discarded, write_buffer never called.
+ * frame[0] must carry a broadcast-type Mercury header so the CMD_DATA path is
+ * taken and the frame is not normalised to VARA/CMD_AX25CALLSIGN. */
 void test_bcast_rx_cmd_data_oversized_discarded(void)
 {
     const size_t fsz = 10;
@@ -626,6 +628,9 @@ void test_bcast_rx_cmd_data_oversized_discarded(void)
 
     uint8_t frame[MAX_PAYLOAD];
     memset(frame, 0x11, sizeof(frame));
+    /* Give byte 0 a proper BROADCAST_DATA Mercury header (no BCAST_EXT_LEN_PREFIX)
+     * so the CMD_DATA path is taken rather than normalised to VARA. */
+    frame[0] = 0x80; /* (PACKET_TYPE_BROADCAST_DATA << PACKET_TYPE_SHIFT) | 0 */
 
     bool ok = bcast_process_decoded_frame(frame, (int)fsz + 5, CMD_DATA, fsz);
 
@@ -666,6 +671,41 @@ void test_bcast_rx_vara_header_injected(void)
     /* Reply cmd normalised to CMD_AX25CALLSIGN regardless of CMD_AX25 vs _CALLSIGN */
     TEST_ASSERT_EQUAL_HEX8(CMD_AX25CALLSIGN,
         atomic_load_explicit(&bcast_reply_cmd, memory_order_relaxed));
+}
+
+/* CMD_DATA without broadcast Mercury header: normalised to VARA path,
+ * BROADCAST_DATA header + length prefix injected (e.g. VarAC beacons). */
+void test_bcast_rx_cmd_data_non_broadcast_treated_as_vara(void)
+{
+    const size_t fsz = 10;
+    broadcast_frame_size_cfg = fsz;
+
+    uint8_t frame[MAX_PAYLOAD];
+    memset(frame, 0, sizeof(frame));
+    /* frame[0] = 0x11: type = (0x11>>5)&7 = 0 = PACKET_TYPE_ARQ_CONTROL
+     * → not a broadcast type → normalised to CMD_AX25CALLSIGN */
+    frame[0] = 0x11;
+    frame[1] = 0xAA;
+    frame[2] = 0xBB;
+    frame[3] = 0xCC;
+
+    bool ok = bcast_process_decoded_frame(frame, 4, CMD_DATA, fsz);
+
+    TEST_ASSERT_TRUE(ok);
+    TEST_ASSERT_EQUAL(1, write_buffer_call_count);
+    /* Normalised → reply cmd latched to CMD_AX25CALLSIGN */
+    TEST_ASSERT_EQUAL_HEX8(CMD_AX25CALLSIGN,
+        atomic_load_explicit(&bcast_reply_cmd, memory_order_relaxed));
+    /* Broadcast header with BCAST_EXT_LEN_PREFIX injected */
+    TEST_ASSERT_EQUAL_HEX8(BCAST_HDR_BYTE, last_write_buffer_data[0]);
+    /* 2-byte big-endian length = 4 */
+    TEST_ASSERT_EQUAL_HEX8(0x00, last_write_buffer_data[1]);
+    TEST_ASSERT_EQUAL_HEX8(0x04, last_write_buffer_data[2]);
+    /* Original 4 bytes shifted to [3..6] */
+    TEST_ASSERT_EQUAL_HEX8(0x11, last_write_buffer_data[3]);
+    TEST_ASSERT_EQUAL_HEX8(0xAA, last_write_buffer_data[4]);
+    TEST_ASSERT_EQUAL_HEX8(0xBB, last_write_buffer_data[5]);
+    TEST_ASSERT_EQUAL_HEX8(0xCC, last_write_buffer_data[6]);
 }
 
 /* CMD_AX25 (bare): reply cmd normalised to CMD_AX25CALLSIGN */
@@ -823,6 +863,7 @@ int main(void)
     RUN_TEST(test_bcast_rx_cmd_data_exact_size);
     RUN_TEST(test_bcast_rx_cmd_data_short_padded);
     RUN_TEST(test_bcast_rx_cmd_data_oversized_discarded);
+    RUN_TEST(test_bcast_rx_cmd_data_non_broadcast_treated_as_vara);
     RUN_TEST(test_bcast_rx_vara_header_injected);
     RUN_TEST(test_bcast_rx_cmd_ax25_reply_cmd);
     RUN_TEST(test_bcast_rx_vara_long_payload_truncated);
