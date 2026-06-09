@@ -873,18 +873,24 @@ static bool bcast_process_decoded_frame(uint8_t *decoded_frame, int frame_len,
 
     if (kiss_cmd == CMD_AX25 || kiss_cmd == CMD_AX25CALLSIGN)
     {
-        /* Inject 1-byte Mercury header before the AX.25 payload */
-        size_t max_payload = frame_size - HEADER_SIZE;
+        /* Inject a 1-byte Mercury header and a 2-byte big-endian payload length
+         * before the AX.25 payload.  Setting BCAST_EXT_LEN_PREFIX in the header
+         * lets receivers recover the exact payload length without relying on the
+         * latched bcast_reply_cmd, which fixes both trailing-null padding and the
+         * transmit-first latch. */
+        size_t max_payload = frame_size - HEADER_SIZE - BCAST_LEN_FIELD_SIZE;
         if ((size_t)frame_len > max_payload)
         {
-            HLOGW("tcp-bcast", "Truncating VARA frame from %d to %zu to fit header",
+            HLOGW("tcp-bcast", "Truncating VARA frame from %d to %zu to fit header+length",
                   frame_len, max_payload);
             frame_len = (int)max_payload;
         }
-        memmove(decoded_frame + HEADER_SIZE, decoded_frame, (size_t)frame_len);
-        write_frame_header(decoded_frame, PACKET_TYPE_BROADCAST_DATA, 0);
-        frame_len += HEADER_SIZE;
-        HLOGD("tcp-bcast", "Added Mercury broadcast header (cmd=0x%02X), frame now %d bytes",
+        memmove(decoded_frame + HEADER_SIZE + BCAST_LEN_FIELD_SIZE, decoded_frame, (size_t)frame_len);
+        write_frame_header(decoded_frame, PACKET_TYPE_BROADCAST_DATA, BCAST_EXT_LEN_PREFIX);
+        decoded_frame[HEADER_SIZE]     = (uint8_t)((frame_len >> 8) & 0xFF);
+        decoded_frame[HEADER_SIZE + 1] = (uint8_t)(frame_len & 0xFF);
+        frame_len += HEADER_SIZE + BCAST_LEN_FIELD_SIZE;
+        HLOGD("tcp-bcast", "Added Mercury broadcast header+length (cmd=0x%02X), frame now %d bytes",
               kiss_cmd, frame_len);
     }
 
@@ -923,6 +929,27 @@ static bool bcast_process_decoded_frame(uint8_t *decoded_frame, int frame_len,
 static uint8_t bcast_get_tx_payload(uint8_t *frame_buffer, size_t frame_size,
                                      uint8_t **payload_out, int *payload_len_out)
 {
+    /* New framing: if BCAST_EXT_LEN_PREFIX is set in the Mercury header, read
+     * the exact payload length from the 2-byte field and deliver just those
+     * bytes as CMD_AX25CALLSIGN.  This is independent of the latched
+     * bcast_reply_cmd, fixing trailing-null padding and the transmit-first
+     * latch in one step.  A patched sender must be paired with a patched
+     * receiver; frames from unpatched senders fall through to legacy handling. */
+    if (frame_size >= (size_t)(HEADER_SIZE + BCAST_LEN_FIELD_SIZE) &&
+        (frame_header_extension(frame_buffer[0]) & BCAST_EXT_LEN_PREFIX))
+    {
+        uint16_t plen = ((uint16_t)frame_buffer[HEADER_SIZE] << 8) |
+                         (uint16_t)frame_buffer[HEADER_SIZE + 1];
+        size_t max_payload = frame_size - HEADER_SIZE - BCAST_LEN_FIELD_SIZE;
+        if ((size_t)plen > max_payload)
+            plen = (uint16_t)max_payload;
+        *payload_out     = frame_buffer + HEADER_SIZE + BCAST_LEN_FIELD_SIZE;
+        *payload_len_out = (int)plen;
+        return CMD_AX25CALLSIGN;
+    }
+
+    /* Legacy framing: forward full frame or strip Mercury header based on the
+     * latched bcast_reply_cmd. */
     uint8_t reply_cmd = atomic_load_explicit(&bcast_reply_cmd, memory_order_relaxed);
     if (reply_cmd == CMD_DATA)
     {

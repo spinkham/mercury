@@ -571,9 +571,9 @@ void test_cmd_callint_negative(void)
 
 /* ---- Broadcast framing helper tests ---- */
 
-/* Expected Mercury header byte for PACKET_TYPE_BROADCAST_DATA (0x04), ext=0:
- *   (0x04 << 5) | 0 = 0x80 */
-#define BCAST_HDR_BYTE 0x80
+/* Expected Mercury header byte for PACKET_TYPE_BROADCAST_DATA (0x04), ext=BCAST_EXT_LEN_PREFIX (0x01):
+ *   (0x04 << 5) | 0x01 = 0x81 */
+#define BCAST_HDR_BYTE 0x81
 
 /* CMD_DATA, exact frame_size: queued unchanged, bcast_reply_cmd = CMD_DATA */
 void test_bcast_rx_cmd_data_exact_size(void)
@@ -636,7 +636,7 @@ void test_bcast_rx_cmd_data_oversized_discarded(void)
         atomic_load_explicit(&bcast_reply_cmd, memory_order_relaxed));
 }
 
-/* CMD_AX25CALLSIGN, payload fits: header injected, payload shifted, zero-padded */
+/* CMD_AX25CALLSIGN, payload fits: Mercury header + 2-byte length injected, payload shifted, zero-padded */
 void test_bcast_rx_vara_header_injected(void)
 {
     const size_t fsz = 10;
@@ -652,13 +652,16 @@ void test_bcast_rx_vara_header_injected(void)
     TEST_ASSERT_TRUE(ok);
     TEST_ASSERT_EQUAL(1, write_buffer_call_count);
     TEST_ASSERT_EQUAL_size_t(fsz, last_write_buffer_len);
-    /* frame[0] must be the broadcast header byte */
+    /* frame[0] must be the broadcast header byte with BCAST_EXT_LEN_PREFIX set */
     TEST_ASSERT_EQUAL_HEX8(BCAST_HDR_BYTE, last_write_buffer_data[0]);
-    /* Original payload shifted to [1..5] */
+    /* frame[1..2] must be 2-byte big-endian length = 5 */
+    TEST_ASSERT_EQUAL_HEX8(0x00, last_write_buffer_data[1]);
+    TEST_ASSERT_EQUAL_HEX8(0x05, last_write_buffer_data[2]);
+    /* Original payload shifted to [3..7] */
     for (int i = 0; i < 5; i++)
-        TEST_ASSERT_EQUAL_HEX8((uint8_t)(i + 1), last_write_buffer_data[1 + i]);
-    /* Tail bytes [6..9] must be zero */
-    for (size_t i = 6; i < fsz; i++)
+        TEST_ASSERT_EQUAL_HEX8((uint8_t)(i + 1), last_write_buffer_data[3 + i]);
+    /* Tail bytes [8..9] must be zero */
+    for (size_t i = 8; i < fsz; i++)
         TEST_ASSERT_EQUAL_HEX8(0x00, last_write_buffer_data[i]);
     /* Reply cmd normalised to CMD_AX25CALLSIGN regardless of CMD_AX25 vs _CALLSIGN */
     TEST_ASSERT_EQUAL_HEX8(CMD_AX25CALLSIGN,
@@ -681,12 +684,12 @@ void test_bcast_rx_cmd_ax25_reply_cmd(void)
         atomic_load_explicit(&bcast_reply_cmd, memory_order_relaxed));
 }
 
-/* CMD_AX25CALLSIGN, payload longer than frame_size-1: truncated then header added */
+/* CMD_AX25CALLSIGN, payload longer than frame_size-HEADER_SIZE-BCAST_LEN_FIELD_SIZE: truncated then header+length added */
 void test_bcast_rx_vara_long_payload_truncated(void)
 {
     const size_t fsz = 10;
     broadcast_frame_size_cfg = fsz;
-    /* max_payload = fsz - HEADER_SIZE = 9; send 12 bytes */
+    /* max_payload = fsz - HEADER_SIZE - BCAST_LEN_FIELD_SIZE = 7; send 12 bytes */
     const int raw_len = 12;
 
     uint8_t frame[MAX_PAYLOAD];
@@ -698,9 +701,12 @@ void test_bcast_rx_vara_long_payload_truncated(void)
     TEST_ASSERT_EQUAL(1, write_buffer_call_count);
     TEST_ASSERT_EQUAL_size_t(fsz, last_write_buffer_len);
     TEST_ASSERT_EQUAL_HEX8(BCAST_HDR_BYTE, last_write_buffer_data[0]);
-    /* Only the first 9 bytes of the original payload must survive */
-    for (int i = 0; i < 9; i++)
-        TEST_ASSERT_EQUAL_HEX8((uint8_t)(0x10 + i), last_write_buffer_data[1 + i]);
+    /* Length field must encode the truncated length (7) */
+    TEST_ASSERT_EQUAL_HEX8(0x00, last_write_buffer_data[1]);
+    TEST_ASSERT_EQUAL_HEX8(0x07, last_write_buffer_data[2]);
+    /* Only the first 7 bytes of the original payload must survive at [3..9] */
+    for (int i = 0; i < 7; i++)
+        TEST_ASSERT_EQUAL_HEX8((uint8_t)(0x10 + i), last_write_buffer_data[3 + i]);
 }
 
 /* bcast_get_tx_payload: CMD_DATA → full frame, payload_len == frame_size */
@@ -722,12 +728,43 @@ void test_bcast_tx_cmd_data_full_frame(void)
     TEST_ASSERT_EQUAL_INT((int)fsz, plen);        /* full frame_size */
 }
 
-/* bcast_get_tx_payload: CMD_AX25CALLSIGN → header stripped, payload_len == frame_size-1 */
+/* bcast_get_tx_payload: frame with BCAST_EXT_LEN_PREFIX → delivers exact payload as
+ * CMD_AX25CALLSIGN, independent of bcast_reply_cmd */
 void test_bcast_tx_vara_strips_header(void)
 {
     const size_t fsz = 10;
     uint8_t frame[10];
+    memset(frame, 0x00, fsz);
+    /* Mercury header: PACKET_TYPE_BROADCAST_DATA | BCAST_EXT_LEN_PREFIX */
     frame[0] = BCAST_HDR_BYTE;
+    /* 2-byte big-endian length = 4 */
+    frame[1] = 0x00;
+    frame[2] = 0x04;
+    /* 4-byte payload */
+    frame[3] = 0xAA;
+    frame[4] = 0xBB;
+    frame[5] = 0xCC;
+    frame[6] = 0xDD;
+
+    /* bcast_reply_cmd is CMD_DATA — must be overridden by BCAST_EXT_LEN_PREFIX */
+    atomic_store_explicit(&bcast_reply_cmd, CMD_DATA, memory_order_relaxed);
+
+    uint8_t *payload = NULL;
+    int plen = 0;
+    uint8_t cmd = bcast_get_tx_payload(frame, fsz, &payload, &plen);
+
+    TEST_ASSERT_EQUAL_HEX8(CMD_AX25CALLSIGN, cmd);
+    TEST_ASSERT_EQUAL_PTR(frame + HEADER_SIZE + BCAST_LEN_FIELD_SIZE, payload);
+    TEST_ASSERT_EQUAL_INT(4, plen);
+}
+
+/* bcast_get_tx_payload: legacy frame (no BCAST_EXT_LEN_PREFIX) falls back to bcast_reply_cmd */
+void test_bcast_tx_legacy_strips_header(void)
+{
+    const size_t fsz = 10;
+    uint8_t frame[10];
+    /* Legacy Mercury header: PACKET_TYPE_BROADCAST_DATA, no BCAST_EXT_LEN_PREFIX */
+    frame[0] = 0x80; /* (0x04 << 5) | 0x00 */
     memset(frame + 1, 0xEE, fsz - 1);
 
     atomic_store_explicit(&bcast_reply_cmd, CMD_AX25CALLSIGN, memory_order_relaxed);
@@ -737,8 +774,8 @@ void test_bcast_tx_vara_strips_header(void)
     uint8_t cmd = bcast_get_tx_payload(frame, fsz, &payload, &plen);
 
     TEST_ASSERT_EQUAL_HEX8(CMD_AX25CALLSIGN, cmd);
-    TEST_ASSERT_EQUAL_PTR(frame + HEADER_SIZE, payload); /* skips the Mercury header */
-    TEST_ASSERT_EQUAL_INT((int)fsz - HEADER_SIZE, plen); /* one byte shorter */
+    TEST_ASSERT_EQUAL_PTR(frame + HEADER_SIZE, payload);
+    TEST_ASSERT_EQUAL_INT((int)fsz - HEADER_SIZE, plen);
 }
 
 int main(void)
@@ -791,5 +828,6 @@ int main(void)
     RUN_TEST(test_bcast_rx_vara_long_payload_truncated);
     RUN_TEST(test_bcast_tx_cmd_data_full_frame);
     RUN_TEST(test_bcast_tx_vara_strips_header);
+    RUN_TEST(test_bcast_tx_legacy_strips_header);
     return UNITY_END();
 }
