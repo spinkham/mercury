@@ -125,7 +125,9 @@ MERCURY_LINK_INPUTS = \
 	main.o common/cfg_utils.o common/iniparser/iniparser.o common/iniparser/dictionary.o \
 	datalink_arq/arq.o datalink_arq/arq_tnc.o datalink_arq/arith.o datalink_arq/arq_channels.o \
 	datalink_arq/arq_fsm.o datalink_arq/arq_protocol.o datalink_arq/arq_timing.o datalink_arq/arq_modem.o \
-	datalink_broadcast/broadcast.o datalink_broadcast/kiss.o modem/modem.o modem/modem_freedv.o modem/framer.o modem/channel_busy.o modem/freedv/libfreedvdata.a \
+	datalink_broadcast/broadcast.o datalink_broadcast/kiss.o modem/modem.o modem/modem_freedv.o modem/modem_mfsk.o \
+	modem/mfsk.o modem/mfsk_ofdm.o modem/mfsk_sync.o modem/mfsk_ldpc.o modem/mfsk_ldpc_1_16.o modem/mfsk_ldpc_2_16.o \
+	modem/mfsk_ldpc_3_16.o modem/mfsk_ldpc_5_16.o modem/mfsk_ldpc_8_16.o modem/framer.o modem/channel_busy.o modem/freedv/libfreedvdata.a \
 	audioio/audioio.a common/os_interop.o common/ring_buffer_posix.o common/shm_posix.o common/crc6.o common/hermes_log.o \
 	common/chan.o common/queue.o common/mercury_engine.o common/mercury_cli.o data_interfaces/tcp_interfaces.o data_interfaces/net.o \
 	gui_interface/ui_communication.o \
@@ -196,7 +198,9 @@ MERCURY_CORE_OBJS = \
 	datalink_arq/arq.o datalink_arq/arq_tnc.o datalink_arq/arith.o datalink_arq/arq_channels.o \
 	datalink_arq/arq_fsm.o datalink_arq/arq_protocol.o datalink_arq/arq_timing.o datalink_arq/arq_modem.o \
 	datalink_broadcast/broadcast.o datalink_broadcast/kiss.o \
-	modem/modem.o modem/modem_freedv.o modem/framer.o modem/channel_busy.o \
+	modem/modem.o modem/modem_freedv.o modem/modem_mfsk.o \
+	modem/mfsk.o modem/mfsk_ofdm.o modem/mfsk_sync.o modem/mfsk_ldpc.o modem/mfsk_ldpc_1_16.o modem/mfsk_ldpc_2_16.o \
+	modem/mfsk_ldpc_3_16.o modem/mfsk_ldpc_5_16.o modem/mfsk_ldpc_8_16.o modem/framer.o modem/channel_busy.o \
 	common/os_interop.o common/ring_buffer_posix.o common/shm_posix.o common/crc6.o common/hermes_log.o \
 	common/chan.o common/queue.o common/mercury_engine.o common/mercury_cli.o \
 	data_interfaces/tcp_interfaces.o data_interfaces/net.o \
